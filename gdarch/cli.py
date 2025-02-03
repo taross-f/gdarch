@@ -17,26 +17,27 @@ Usage Examples:
   garch --folder-id <TARGET_FOLDER_ID> --archive-name my_archive.tar.xz --credentials credentials.json
 """
 
-import os
-import sys
-import io
 import argparse
-import tarfile
+import io
+import os
 import posixpath
-import requests
-import tempfile
 import shutil
+import sys
+import tarfile
+import tempfile
 
+import requests
+from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
-from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
 # Google Drive scope with read and write permissions
-SCOPES = ['https://www.googleapis.com/auth/drive']
+SCOPES = ["https://www.googleapis.com/auth/drive"]
 
-def get_credentials(creds_file, token_file='token.json'):
+
+def get_credentials(creds_file, token_file="token.json"):
     """
     Retrieve OAuth2 credentials. Uses token_file to store credentials for future runs.
     """
@@ -53,13 +54,15 @@ def get_credentials(creds_file, token_file='token.json'):
         if not creds:
             flow = InstalledAppFlow.from_client_secrets_file(creds_file, SCOPES)
             creds = flow.run_local_server(port=0)
-        with open(token_file, 'w') as token:
+        with open(token_file, "w") as token:
             token.write(creds.to_json())
     return creds
 
+
 def get_drive_service(creds):
     """Create a Google Drive API service instance."""
-    return build('drive', 'v3', credentials=creds)
+    return build("drive", "v3", credentials=creds)
+
 
 def list_files(service, folder_id, parent_path=""):
     """
@@ -71,41 +74,52 @@ def list_files(service, folder_id, parent_path=""):
     page_token = None
     query = "'{}' in parents".format(folder_id)
     while True:
-        response = service.files().list(
-            q=query,
-            fields="nextPageToken, files(id, name, mimeType, size)",
-            pageToken=page_token,
-            pageSize=1000
-        ).execute()
+        response = (
+            service.files()
+            .list(
+                q=query,
+                fields="nextPageToken, files(id, name, mimeType, size)",
+                pageToken=page_token,
+                pageSize=1000,
+            )
+            .execute()
+        )
 
-        for f in response.get('files', []):
-            file_path = posixpath.join(parent_path, f['name'])
-            if f['mimeType'] == 'application/vnd.google-apps.folder':
+        for f in response.get("files", []):
+            file_path = posixpath.join(parent_path, f["name"])
+            if f["mimeType"] == "application/vnd.google-apps.folder":
                 # Recursively process subfolders
-                results.extend(list_files(service, f['id'], file_path))
+                results.extend(list_files(service, f["id"], file_path))
             else:
-                if 'size' in f:
-                    f['relative_path'] = file_path
+                if "size" in f:
+                    f["relative_path"] = file_path
                     results.append(f)
                 else:
-                    print("Skipping file (no size info):", file_path, "mimeType:", f['mimeType'])
-        page_token = response.get('nextPageToken', None)
+                    print(
+                        "Skipping file (no size info):",
+                        file_path,
+                        "mimeType:",
+                        f["mimeType"],
+                    )
+        page_token = response.get("nextPageToken", None)
         if not page_token:
             break
     return results
+
 
 class LimitedStream:
     """
     A wrapper for a stream that limits the number of bytes read.
     This ensures that tarfile.addfile() reads the correct amount of data.
     """
+
     def __init__(self, stream, limit):
         self.stream = stream
         self.remaining = limit
 
     def read(self, size=-1):
         if self.remaining <= 0:
-            return b''
+            return b""
         if size < 0 or size > self.remaining:
             size = self.remaining
         data = self.stream.read(size)
@@ -114,6 +128,7 @@ class LimitedStream:
 
     def readable(self):
         return True
+
 
 def create_archive(service, creds, folder_id, archive_path):
     """
@@ -133,10 +148,10 @@ def create_archive(service, creds, folder_id, archive_path):
         return False
 
     for f in files:
-        rel_path = f['relative_path']
-        file_id = f['id']
+        rel_path = f["relative_path"]
+        file_id = f["id"]
         try:
-            file_size = int(f['size'])
+            file_size = int(f["size"])
         except Exception as e:
             print("Invalid size info for file, skipping:", rel_path)
             continue
@@ -148,7 +163,10 @@ def create_archive(service, creds, folder_id, archive_path):
             # Download file in streaming mode
             response = requests.get(url, headers=headers, stream=True)
             if response.status_code != 200:
-                print("  [ERROR] Failed to download file. HTTP status code:", response.status_code)
+                print(
+                    "  [ERROR] Failed to download file. HTTP status code:",
+                    response.status_code,
+                )
                 continue
             response.raw.decode_content = True
             limited_stream = LimitedStream(response.raw, file_size)
@@ -162,17 +180,20 @@ def create_archive(service, creds, folder_id, archive_path):
     tar.close()
     return True
 
+
 def upload_file(service, local_file, name, parent_id):
     """
     Upload the local file to Google Drive under the specified parent folder.
     """
-    file_metadata = {
-        'name': name,
-        'parents': [parent_id]
-    }
-    media = MediaFileUpload(local_file, mimetype='application/x-xz', resumable=True)
-    file = service.files().create(body=file_metadata, media_body=media, fields='id').execute()
-    return file.get('id')
+    file_metadata = {"name": name, "parents": [parent_id]}
+    media = MediaFileUpload(local_file, mimetype="application/x-xz", resumable=True)
+    file = (
+        service.files()
+        .create(body=file_metadata, media_body=media, fields="id")
+        .execute()
+    )
+    return file.get("id")
+
 
 def delete_file_or_folder(service, file_id):
     """Delete the specified file or folder from Google Drive."""
@@ -182,19 +203,34 @@ def delete_file_or_folder(service, file_id):
     except Exception as e:
         print("Error deleting file/folder:", e)
 
+
 def get_file_metadata(service, file_id):
     """Retrieve metadata (id, name, parents) for the specified file."""
     return service.files().get(fileId=file_id, fields="id,name,parents").execute()
+
 
 def main():
     parser = argparse.ArgumentParser(
         description="Archive a specified Google Drive folder and replace it with the archive."
     )
-    parser.add_argument("--folder-id", required=True, help="Google Drive ID of the target folder")
-    parser.add_argument("--credentials", default="credentials.json", help="OAuth2 credentials file (e.g., credentials.json)")
-    parser.add_argument("--archive-name", help="Name for the uploaded archive file (e.g., folder_archive.tar.xz). "
-                                               "Defaults to folder name + '.tar.xz'")
-    parser.add_argument("--delete-folder", action="store_true", help="Delete the original folder after archiving")
+    parser.add_argument(
+        "--folder-id", required=True, help="Google Drive ID of the target folder"
+    )
+    parser.add_argument(
+        "--credentials",
+        default="credentials.json",
+        help="OAuth2 credentials file (e.g., credentials.json)",
+    )
+    parser.add_argument(
+        "--archive-name",
+        help="Name for the uploaded archive file (e.g., folder_archive.tar.xz). "
+        "Defaults to folder name + '.tar.xz'",
+    )
+    parser.add_argument(
+        "--delete-folder",
+        action="store_true",
+        help="Delete the original folder after archiving",
+    )
     args = parser.parse_args()
 
     # Initialize credentials and Drive API service
@@ -203,8 +239,8 @@ def main():
 
     # Retrieve metadata for the target folder (name, parent folder, etc.)
     folder_meta = get_file_metadata(service, args.folder_id)
-    folder_name = folder_meta.get('name', 'folder')
-    parent_ids = folder_meta.get('parents', [])
+    folder_name = folder_meta.get("name", "folder")
+    parent_ids = folder_meta.get("parents", [])
     if not parent_ids:
         print("No parent folder found. Cannot process root-level folders.")
         sys.exit(1)
@@ -237,5 +273,6 @@ def main():
     shutil.rmtree(temp_dir)
     print("Operation completed successfully. Enjoy your productive day!")
 
-if __name__ == '__main__':
-    main() 
+
+if __name__ == "__main__":
+    main()
