@@ -1,12 +1,12 @@
 [tool.poetry]
-name = "garch"
+name = "gdarch"
 version = "0.1.0"
 description = "CLI tool to archive a Google Drive folder and replace it with the archive"
 authors = ["Taro Furuya <your.email@example.com>"]
 license = "MIT"
 readme = "README.md"
-repository = "https://github.com/yourusername/garch"
-packages = [{include = "garch"}]
+repository = "https://github.com/yourusername/gdarch"
+packages = [{include = "gdarch"}]
 
 [tool.poetry.dependencies]
 python = "^3.8"
@@ -25,4 +25,4 @@ requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
 
 [tool.poetry.scripts]
-garch = "garch.cli:main" 
+gdarch = "gdarch.cli:main" 

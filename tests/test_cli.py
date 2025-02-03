@@ -6,7 +6,7 @@ import pytest
 from google.oauth2.credentials import Credentials
 from googleapiclient import discovery
 
-from garch.cli import (
+from gdarch.cli import (
     get_credentials,
     get_drive_service,
     list_files,
@@ -64,7 +64,7 @@ def test_get_credentials_from_existing_token(tmp_path):
         assert creds == mock_creds
         mock_from_file.assert_called_once_with(str(token_file), ['https://www.googleapis.com/auth/drive'])
 
-@patch('garch.cli.build')
+@patch('gdarch.cli.build')
 def test_get_drive_service(mock_build, mock_credentials):
     mock_service = MagicMock()
     mock_build.return_value = mock_service

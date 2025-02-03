@@ -1,4 +1,4 @@
-# garch
+# gdarch
 
 A CLI tool to archive Google Drive folders and replace them with compressed archives.
 
@@ -13,7 +13,7 @@ A CLI tool to archive Google Drive folders and replace them with compressed arch
 
 ### From PyPI
 ```bash
-pip install garch
+pip install gdarch
 ```
 
 ### From Source
@@ -22,8 +22,8 @@ pip install garch
 curl -sSL https://install.python-poetry.org | python3 -
 
 # Clone and install
-git clone https://github.com/yourusername/garch.git
-cd garch
+git clone https://github.com/yourusername/gdarch.git
+cd gdarch
 poetry install
 ```
 
@@ -40,16 +40,16 @@ poetry install
 
 ```bash
 # When installed from PyPI
-garch --folder-id <TARGET_FOLDER_ID> --credentials credentials.json
+gdarch --folder-id <TARGET_FOLDER_ID> --credentials credentials.json
 
 # When installed from source (using Poetry)
-poetry run garch --folder-id <TARGET_FOLDER_ID> --credentials credentials.json
+poetry run gdarch --folder-id <TARGET_FOLDER_ID> --credentials credentials.json
 
 # Archive and delete the original folder
-garch --folder-id <TARGET_FOLDER_ID> --credentials credentials.json --delete-folder
+gdarch --folder-id <TARGET_FOLDER_ID> --credentials credentials.json --delete-folder
 
 # Specify a custom archive name
-garch --folder-id <TARGET_FOLDER_ID> --archive-name my_archive.tar.xz --credentials credentials.json
+gdarch --folder-id <TARGET_FOLDER_ID> --archive-name my_archive.tar.xz --credentials credentials.json
 ```
 
 ### Options
