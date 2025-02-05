@@ -19,13 +19,13 @@ Usage Examples:
 
 import argparse
 import io
+import lzma
 import os
 import posixpath
 import shutil
 import sys
 import tarfile
 import tempfile
-import lzma
 
 import requests
 from google.auth.transport.requests import Request
@@ -197,11 +197,7 @@ def upload_file(service, local_file, name, parent_id):
     """
     file_metadata = {"name": name, "parents": [parent_id]}
     media = MediaFileUpload(local_file, mimetype="application/x-xz", resumable=True)
-    file = (
-        service.files()
-        .create(body=file_metadata, media_body=media, fields="id")
-        .execute()
-    )
+    file = service.files().create(body=file_metadata, media_body=media, fields="id").execute()
     return file.get("id")
 
 
@@ -223,9 +219,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Archive a specified Google Drive folder and replace it with the archive."
     )
-    parser.add_argument(
-        "--folder-id", required=True, help="Google Drive ID of the target folder"
-    )
+    parser.add_argument("--folder-id", required=True, help="Google Drive ID of the target folder")
     parser.add_argument(
         "--credentials",
         default="credentials.json",

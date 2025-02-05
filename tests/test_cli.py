@@ -1,13 +1,14 @@
 import os
 import tempfile
-from unittest.mock import MagicMock, patch
 from io import BytesIO
+from unittest.mock import MagicMock, patch
 
 import pytest
 from google.oauth2.credentials import Credentials
 from googleapiclient import discovery
 
 from gdarch.cli import (
+    LimitedStream,
     create_archive,
     delete_file_or_folder,
     get_credentials,
@@ -15,7 +16,6 @@ from gdarch.cli import (
     get_file_metadata,
     list_files,
     upload_file,
-    LimitedStream,
 )
 
 
@@ -33,9 +33,7 @@ def mock_service():
     # files().list()のモック設定
     files_list = MagicMock()
     service.files.return_value.list.return_value.execute.return_value = {
-        "files": [
-            {"id": "file1", "name": "test.txt", "mimeType": "text/plain", "size": "100"}
-        ]
+        "files": [{"id": "file1", "name": "test.txt", "mimeType": "text/plain", "size": "100"}]
     }
     # files().get()のモック設定
     service.files.return_value.get.return_value.execute.return_value = {
@@ -60,16 +58,12 @@ def test_get_credentials_from_existing_token(tmp_path):
     token_file = tmp_path / "token.json"
     token_file.write_text('{"token": "dummy_token"}')
 
-    with patch(
-        "google.oauth2.credentials.Credentials.from_authorized_user_file"
-    ) as mock_from_file:
+    with patch("google.oauth2.credentials.Credentials.from_authorized_user_file") as mock_from_file:
         mock_creds = MagicMock()
         mock_creds.valid = True
         mock_from_file.return_value = mock_creds
 
-        creds = get_credentials(
-            creds_file="dummy_credentials.json", token_file=str(token_file)
-        )
+        creds = get_credentials(creds_file="dummy_credentials.json", token_file=str(token_file))
 
         assert creds == mock_creds
         mock_from_file.assert_called_once_with(
@@ -151,13 +145,13 @@ def test_limited_stream_exact_size():
 def test_create_archive_success(mock_get, mock_service, mock_credentials, mock_response, tmp_path):
     # モックの設定
     mock_get.return_value = mock_response
-    
+
     # テストファイルの作成
     archive_path = tmp_path / "test_archive.tar.xz"
-    
+
     # アーカイブの作成
     result = create_archive(mock_service, mock_credentials, "test_folder", str(archive_path))
-    
+
     assert result is True
     assert os.path.exists(archive_path)
     assert os.path.getsize(archive_path) > 0
@@ -167,13 +161,13 @@ def test_create_archive_success(mock_get, mock_service, mock_credentials, mock_r
 def test_create_archive_empty_folder(mock_get, mock_service, mock_credentials, tmp_path):
     # 空のフォルダをシミュレート
     mock_service.files.return_value.list.return_value.execute.return_value = {"files": []}
-    
+
     # テストファイルの作成
     archive_path = tmp_path / "empty_archive.tar.xz"
-    
+
     # アーカイブの作成
     result = create_archive(mock_service, mock_credentials, "empty_folder", str(archive_path))
-    
+
     assert result is False
     assert not os.path.exists(archive_path)
 
@@ -184,12 +178,12 @@ def test_create_archive_download_error(mock_get, mock_service, mock_credentials,
     mock_response = MagicMock()
     mock_response.status_code = 404
     mock_get.return_value = mock_response
-    
+
     # テストファイルの作成
     archive_path = tmp_path / "error_archive.tar.xz"
-    
+
     # アーカイブの作成
     result = create_archive(mock_service, mock_credentials, "test_folder", str(archive_path))
-    
+
     assert result is True  # エラーファイルはスキップされるため、全体としては成功
     assert os.path.exists(archive_path)
