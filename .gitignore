@@ -37,6 +37,7 @@ ENV/
 .coverage
 .pytest_cache/
 htmlcov/
+coverage.xml
 
 # OAuth
 credentials.json
