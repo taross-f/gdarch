@@ -5,6 +5,16 @@
 
 A CLI tool to archive Google Drive folders and replace them with compressed archives.
 
+## Motivation
+
+Google Drive storage space is often filled with large folders that are rarely accessed but need to be kept for reference or backup purposes. This tool helps you free up storage space by:
+
+1. Automatically compressing such folders into high-compression archives
+2. Replacing the original folders with their compressed versions
+3. Maintaining the same folder structure and accessibility
+
+This way, you can keep your important data while significantly reducing storage usage.
+
 ## Features
 
 - Recursively downloads all files from a specified Google Drive folder
