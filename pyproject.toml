@@ -1,10 +1,7 @@
 [tool.poetry]
 name = "gdarch"
 version = "0.1.0"
-description = """
-CLI tool to archive a Google Drive folder and replace it with the archive.
-Helps to free up Google Drive storage space by compressing rarely accessed folders while keeping them accessible.
-"""
+description = "CLI tool to archive a Google Drive folder and replace it with the archive. Helps to free up Google Drive storage space by compressing rarely accessed folders while keeping them accessible."
 authors = ["Taro Furuya <taro.furuya@gmail.com>"]
 license = "MIT"
 readme = "README.md"
