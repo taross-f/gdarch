@@ -5,7 +5,7 @@ description = "CLI tool to archive a Google Drive folder and replace it with the
 authors = ["Taro Furuya <your.email@example.com>"]
 license = "MIT"
 readme = "README.md"
-repository = "https://github.com/yourusername/gdarch"
+repository = "https://github.com/taross-f/gdarch"
 packages = [{include = "gdarch"}]
 
 [tool.poetry.dependencies]

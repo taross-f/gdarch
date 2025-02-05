@@ -1,7 +1,7 @@
 # gdarch
 
-[![CI](https://github.com/tarof429/gdarch/actions/workflows/ci.yml/badge.svg)](https://github.com/tarof429/gdarch/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/tarof429/gdarch/branch/main/graph/badge.svg)](https://codecov.io/gh/tarof429/gdarch)
+[![CI](https://github.com/taross-f/gdarch/actions/workflows/ci.yml/badge.svg)](https://github.com/taross-f/gdarch/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/taross-f/gdarch/branch/main/graph/badge.svg)](https://codecov.io/gh/taross-f/gdarch)
 
 A CLI tool to archive Google Drive folders and replace them with compressed archives.
 
@@ -25,7 +25,7 @@ pip install gdarch
 curl -sSL https://install.python-poetry.org | python3 -
 
 # Clone and install
-git clone https://github.com/yourusername/gdarch.git
+git clone https://github.com/taross-f/gdarch.git
 cd gdarch
 poetry install
 ```
