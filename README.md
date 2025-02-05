@@ -1,5 +1,8 @@
 # gdarch
 
+[![CI](https://github.com/tarof429/gdarch/actions/workflows/ci.yml/badge.svg)](https://github.com/tarof429/gdarch/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/tarof429/gdarch/branch/main/graph/badge.svg)](https://codecov.io/gh/tarof429/gdarch)
+
 A CLI tool to archive Google Drive folders and replace them with compressed archives.
 
 ## Features
