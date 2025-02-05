@@ -25,6 +25,7 @@ import shutil
 import sys
 import tarfile
 import tempfile
+import lzma
 
 import requests
 from google.auth.transport.requests import Request
@@ -132,7 +133,8 @@ class LimitedStream:
 
 def create_archive(service, creds, folder_id, archive_path):
     """
-    Download files under the specified folder_id and create a tar.xz archive at archive_path.
+    Download files under the specified folder_id and create a highly compressed LZMA archive at archive_path.
+    Uses maximum compression settings for best compression ratio.
     """
     print("Retrieving file list from the specified folder...")
     files = list_files(service, folder_id)
@@ -142,10 +144,18 @@ def create_archive(service, creds, folder_id, archive_path):
         return False
 
     try:
-        tar = tarfile.open(archive_path, mode="w:xz")
+        # Open tar.xz with maximum compression settings
+        tar = tarfile.open(
+            archive_path,
+            mode="w:xz",
+            preset=9 | lzma.PRESET_EXTREME,
+        )
     except Exception as e:
         print("Failed to create archive file:", e)
         return False
+
+    total_size = sum(int(f["size"]) for f in files)
+    processed_size = 0
 
     for f in files:
         rel_path = f["relative_path"]
@@ -156,23 +166,23 @@ def create_archive(service, creds, folder_id, archive_path):
             print("Invalid size info for file, skipping:", rel_path)
             continue
 
-        print("Adding to archive:", rel_path, f"({file_size} bytes)")
+        print(
+            f"Adding to archive: {rel_path} ({file_size} bytes) - {processed_size * 100 / total_size:.1f}% complete"
+        )
         url = "https://www.googleapis.com/drive/v3/files/{}?alt=media".format(file_id)
         headers = {"Authorization": "Bearer " + creds.token}
         try:
             # Download file in streaming mode
             response = requests.get(url, headers=headers, stream=True)
             if response.status_code != 200:
-                print(
-                    "  [ERROR] Failed to download file. HTTP status code:",
-                    response.status_code,
-                )
+                print("  [ERROR] Failed to download file. HTTP status code:", response.status_code)
                 continue
             response.raw.decode_content = True
             limited_stream = LimitedStream(response.raw, file_size)
             tarinfo = tarfile.TarInfo(name=rel_path)
             tarinfo.size = file_size
             tar.addfile(tarinfo, fileobj=limited_stream)
+            processed_size += file_size
         except Exception as e:
             print("  [ERROR] Error while adding file to archive:", e)
             continue

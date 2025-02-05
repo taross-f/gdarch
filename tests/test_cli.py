@@ -1,14 +1,22 @@
 import os
 import tempfile
 from unittest.mock import MagicMock, patch
+from io import BytesIO
 
 import pytest
 from google.oauth2.credentials import Credentials
 from googleapiclient import discovery
 
-from gdarch.cli import (create_archive, delete_file_or_folder, get_credentials,
-                        get_drive_service, get_file_metadata, list_files,
-                        upload_file)
+from gdarch.cli import (
+    create_archive,
+    delete_file_or_folder,
+    get_credentials,
+    get_drive_service,
+    get_file_metadata,
+    list_files,
+    upload_file,
+    LimitedStream,
+)
 
 
 @pytest.fixture
@@ -36,6 +44,15 @@ def mock_service():
         "parents": ["parent123"],
     }
     return service
+
+
+@pytest.fixture
+def mock_response():
+    response = MagicMock()
+    response.status_code = 200
+    response.raw = BytesIO(b"test content")
+    response.raw.decode_content = True
+    return response
 
 
 def test_get_credentials_from_existing_token(tmp_path):
@@ -89,3 +106,90 @@ def test_get_file_metadata(mock_service):
     mock_service.files.return_value.get.assert_called_with(
         fileId="test123", fields="id,name,parents"
     )
+
+
+def test_limited_stream():
+    # テストデータの準備
+    test_data = b"Hello, World!"
+    stream = BytesIO(test_data)
+    limit = 5
+
+    # LimitedStreamの作成
+    limited = LimitedStream(stream, limit)
+
+    # 制限内での読み取り
+    data1 = limited.read(3)
+    assert data1 == b"Hel"
+    assert limited.remaining == 2
+
+    # 残りのデータを読み取り
+    data2 = limited.read()
+    assert data2 == b"lo"
+    assert limited.remaining == 0
+
+    # 制限を超えた読み取り
+    data3 = limited.read()
+    assert data3 == b""
+
+    # readable()メソッドのテスト
+    assert limited.readable() is True
+
+
+def test_limited_stream_exact_size():
+    # 正確なサイズでの読み取りテスト
+    test_data = b"1234567890"
+    stream = BytesIO(test_data)
+    limit = 10
+
+    limited = LimitedStream(stream, limit)
+    data = limited.read()
+    assert len(data) == 10
+    assert data == test_data
+
+
+@patch("requests.get")
+def test_create_archive_success(mock_get, mock_service, mock_credentials, mock_response, tmp_path):
+    # モックの設定
+    mock_get.return_value = mock_response
+    
+    # テストファイルの作成
+    archive_path = tmp_path / "test_archive.tar.xz"
+    
+    # アーカイブの作成
+    result = create_archive(mock_service, mock_credentials, "test_folder", str(archive_path))
+    
+    assert result is True
+    assert os.path.exists(archive_path)
+    assert os.path.getsize(archive_path) > 0
+
+
+@patch("requests.get")
+def test_create_archive_empty_folder(mock_get, mock_service, mock_credentials, tmp_path):
+    # 空のフォルダをシミュレート
+    mock_service.files.return_value.list.return_value.execute.return_value = {"files": []}
+    
+    # テストファイルの作成
+    archive_path = tmp_path / "empty_archive.tar.xz"
+    
+    # アーカイブの作成
+    result = create_archive(mock_service, mock_credentials, "empty_folder", str(archive_path))
+    
+    assert result is False
+    assert not os.path.exists(archive_path)
+
+
+@patch("requests.get")
+def test_create_archive_download_error(mock_get, mock_service, mock_credentials, tmp_path):
+    # ダウンロードエラーをシミュレート
+    mock_response = MagicMock()
+    mock_response.status_code = 404
+    mock_get.return_value = mock_response
+    
+    # テストファイルの作成
+    archive_path = tmp_path / "error_archive.tar.xz"
+    
+    # アーカイブの作成
+    result = create_archive(mock_service, mock_credentials, "test_folder", str(archive_path))
+    
+    assert result is True  # エラーファイルはスキップされるため、全体としては成功
+    assert os.path.exists(archive_path)
