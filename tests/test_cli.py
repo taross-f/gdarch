@@ -95,6 +95,7 @@ def test_get_credentials_new_flow(tmp_path):
 
     with patch("google_auth_oauthlib.flow.InstalledAppFlow.from_client_secrets_file") as mock_flow:
         mock_creds = MagicMock()
+        mock_creds.to_json.return_value = '{"token": "dummy_token"}'  # to_json()の戻り値を設定
         mock_flow.return_value.run_local_server.return_value = mock_creds
 
         creds = get_credentials(creds_file="dummy_credentials.json", token_file=str(token_file))
@@ -129,12 +130,12 @@ def test_list_files_with_folder(mock_service):
     mock_service.files.return_value.list.return_value.execute.side_effect = [
         {
             "files": [
+                {"id": "file1", "name": "test.txt", "mimeType": "text/plain", "size": "100"},
                 {
                     "id": "folder1",
                     "name": "subfolder",
                     "mimeType": "application/vnd.google-apps.folder",
                 },
-                {"id": "file1", "name": "test.txt", "mimeType": "text/plain", "size": "100"},
             ]
         },
         {
@@ -277,12 +278,10 @@ def test_create_archive_download_error(mock_get, mock_service, mock_credentials,
 @patch("gdarch.cli.get_drive_service")
 @patch("gdarch.cli.create_archive")
 @patch("gdarch.cli.upload_file")
-def test_main_success(
-    mock_upload, mock_create, mock_service, mock_creds, mock_service_fixture, tmp_path
-):
+def test_main_success(mock_upload, mock_create, mock_drive_service, mock_creds, mock_service):
     # モックの設定
     mock_creds.return_value = MagicMock()
-    mock_service.return_value = mock_service_fixture
+    mock_drive_service.return_value = mock_service
     mock_create.return_value = True
     mock_upload.return_value = "uploaded123"
 
@@ -297,11 +296,11 @@ def test_main_success(
 
 @patch("gdarch.cli.get_credentials")
 @patch("gdarch.cli.get_drive_service")
-def test_main_no_parent_folder(mock_service, mock_creds, mock_service_fixture):
+def test_main_no_parent_folder(mock_drive_service, mock_creds, mock_service):
     # 親フォルダがない場合をシミュレート
     mock_creds.return_value = MagicMock()
-    mock_service.return_value = mock_service_fixture
-    mock_service_fixture.files.return_value.get.return_value.execute.return_value = {
+    mock_drive_service.return_value = mock_service
+    mock_service.files.return_value.get.return_value.execute.return_value = {
         "id": "test123",
         "name": "test_folder",
     }
@@ -317,10 +316,10 @@ def test_main_no_parent_folder(mock_service, mock_creds, mock_service_fixture):
 @patch("gdarch.cli.get_credentials")
 @patch("gdarch.cli.get_drive_service")
 @patch("gdarch.cli.create_archive")
-def test_main_archive_creation_failed(mock_create, mock_service, mock_creds, mock_service_fixture):
+def test_main_archive_creation_failed(mock_create, mock_drive_service, mock_creds, mock_service):
     # アーカイブ作成失敗をシミュレート
     mock_creds.return_value = MagicMock()
-    mock_service.return_value = mock_service_fixture
+    mock_drive_service.return_value = mock_service
     mock_create.return_value = False
 
     # コマンドライン引数をシミュレート
