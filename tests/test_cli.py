@@ -15,8 +15,8 @@ from gdarch.cli import (
     get_drive_service,
     get_file_metadata,
     list_files,
-    upload_file,
     main,
+    upload_file,
 )
 
 
@@ -92,14 +92,16 @@ def test_get_credentials_refresh_token(tmp_path):
 def test_get_credentials_new_flow(tmp_path):
     # トークンが存在しない場合をシミュレート
     token_file = tmp_path / "token.json"
-    
+
     with patch("google_auth_oauthlib.flow.InstalledAppFlow.from_client_secrets_file") as mock_flow:
         mock_creds = MagicMock()
         mock_flow.return_value.run_local_server.return_value = mock_creds
-        
+
         creds = get_credentials(creds_file="dummy_credentials.json", token_file=str(token_file))
-        
-        mock_flow.assert_called_once_with("dummy_credentials.json", ["https://www.googleapis.com/auth/drive"])
+
+        mock_flow.assert_called_once_with(
+            "dummy_credentials.json", ["https://www.googleapis.com/auth/drive"]
+        )
         assert os.path.exists(token_file)
 
 
@@ -127,7 +129,11 @@ def test_list_files_with_folder(mock_service):
     mock_service.files.return_value.list.return_value.execute.side_effect = [
         {
             "files": [
-                {"id": "folder1", "name": "subfolder", "mimeType": "application/vnd.google-apps.folder"},
+                {
+                    "id": "folder1",
+                    "name": "subfolder",
+                    "mimeType": "application/vnd.google-apps.folder",
+                },
                 {"id": "file1", "name": "test.txt", "mimeType": "text/plain", "size": "100"},
             ]
         },
@@ -159,13 +165,13 @@ def test_get_file_metadata(mock_service):
 
 def test_upload_file(mock_service):
     mock_service.files.return_value.create.return_value.execute.return_value = {"id": "uploaded123"}
-    
+
     with tempfile.NamedTemporaryFile() as tmp_file:
         tmp_file.write(b"test content")
         tmp_file.flush()
-        
+
         file_id = upload_file(mock_service, tmp_file.name, "test.tar.xz", "parent123")
-        
+
         assert file_id == "uploaded123"
         mock_service.files.return_value.create.assert_called_once()
 
@@ -271,7 +277,9 @@ def test_create_archive_download_error(mock_get, mock_service, mock_credentials,
 @patch("gdarch.cli.get_drive_service")
 @patch("gdarch.cli.create_archive")
 @patch("gdarch.cli.upload_file")
-def test_main_success(mock_upload, mock_create, mock_service, mock_creds, mock_service_fixture, tmp_path):
+def test_main_success(
+    mock_upload, mock_create, mock_service, mock_creds, mock_service_fixture, tmp_path
+):
     # モックの設定
     mock_creds.return_value = MagicMock()
     mock_service.return_value = mock_service_fixture
@@ -325,14 +333,14 @@ def test_main_archive_creation_failed(mock_create, mock_service, mock_creds, moc
 
 def test_get_credentials_from_token_json():
     # トークンJSONからの認証をテスト
-    token_json = '''{
+    token_json = """{
         "token": "dummy_token",
         "refresh_token": "dummy_refresh",
         "token_uri": "https://oauth2.googleapis.com/token",
         "client_id": "dummy_client_id",
         "client_secret": "dummy_secret",
         "scopes": ["https://www.googleapis.com/auth/drive"]
-    }'''
+    }"""
 
     with patch("google.oauth2.credentials.Credentials.from_authorized_user_info") as mock_from_info:
         mock_creds = MagicMock()

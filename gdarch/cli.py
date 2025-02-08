@@ -46,20 +46,21 @@ def get_credentials(creds_file=None, token_file="token.json", token_json=None):
     3. OAuth2 credentials file
     """
     creds = None
-    
+
     # 1. Try direct token JSON
     if token_json:
         try:
             import json
+
             token_data = json.loads(token_json)
             creds = Credentials.from_authorized_user_info(token_data, SCOPES)
         except Exception as e:
             print("Failed to parse token JSON:", e)
-    
+
     # 2. Try token file
     if not creds and os.path.exists(token_file):
         creds = Credentials.from_authorized_user_file(token_file, SCOPES)
-    
+
     # 3. Try credentials file
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
