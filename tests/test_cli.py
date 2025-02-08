@@ -321,3 +321,35 @@ def test_main_archive_creation_failed(mock_create, mock_service, mock_creds, moc
         with pytest.raises(SystemExit) as exc_info:
             main()
         assert exc_info.value.code == 1
+
+
+def test_get_credentials_from_token_json():
+    # トークンJSONからの認証をテスト
+    token_json = '''{
+        "token": "dummy_token",
+        "refresh_token": "dummy_refresh",
+        "token_uri": "https://oauth2.googleapis.com/token",
+        "client_id": "dummy_client_id",
+        "client_secret": "dummy_secret",
+        "scopes": ["https://www.googleapis.com/auth/drive"]
+    }'''
+
+    with patch("google.oauth2.credentials.Credentials.from_authorized_user_info") as mock_from_info:
+        mock_creds = MagicMock()
+        mock_creds.valid = True
+        mock_from_info.return_value = mock_creds
+
+        creds = get_credentials(token_json=token_json)
+
+        assert creds == mock_creds
+        mock_from_info.assert_called_once()
+
+
+def test_get_credentials_invalid_token_json():
+    # 無効なトークンJSONの処理をテスト
+    token_json = "invalid json"
+
+    with patch("google.oauth2.credentials.Credentials.from_authorized_user_info") as mock_from_info:
+        creds = get_credentials(token_json=token_json)
+        assert creds is None
+        mock_from_info.assert_not_called()

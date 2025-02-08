@@ -38,13 +38,29 @@ from googleapiclient.http import MediaFileUpload
 SCOPES = ["https://www.googleapis.com/auth/drive"]
 
 
-def get_credentials(creds_file, token_file="token.json"):
+def get_credentials(creds_file=None, token_file="token.json", token_json=None):
     """
-    Retrieve OAuth2 credentials. Uses token_file to store credentials for future runs.
+    Retrieve OAuth2 credentials. Uses one of the following methods:
+    1. Direct token JSON
+    2. Existing token file
+    3. OAuth2 credentials file
     """
     creds = None
-    if os.path.exists(token_file):
+    
+    # 1. Try direct token JSON
+    if token_json:
+        try:
+            import json
+            token_data = json.loads(token_json)
+            creds = Credentials.from_authorized_user_info(token_data, SCOPES)
+        except Exception as e:
+            print("Failed to parse token JSON:", e)
+    
+    # 2. Try token file
+    if not creds and os.path.exists(token_file):
         creds = Credentials.from_authorized_user_file(token_file, SCOPES)
+    
+    # 3. Try credentials file
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             try:
@@ -52,11 +68,11 @@ def get_credentials(creds_file, token_file="token.json"):
             except Exception as e:
                 print("Failed to refresh credentials:", e)
                 creds = None
-        if not creds:
+        if not creds and creds_file:
             flow = InstalledAppFlow.from_client_secrets_file(creds_file, SCOPES)
             creds = flow.run_local_server(port=0)
-        with open(token_file, "w") as token:
-            token.write(creds.to_json())
+            with open(token_file, "w") as token:
+                token.write(creds.to_json())
     return creds
 
 
@@ -222,8 +238,11 @@ def main():
     parser.add_argument("--folder-id", required=True, help="Google Drive ID of the target folder")
     parser.add_argument(
         "--credentials",
-        default="credentials.json",
         help="OAuth2 credentials file (e.g., credentials.json)",
+    )
+    parser.add_argument(
+        "--token",
+        help="OAuth2 token JSON string (alternative to credentials file)",
     )
     parser.add_argument(
         "--archive-name",
@@ -237,8 +256,16 @@ def main():
     )
     args = parser.parse_args()
 
+    if not args.credentials and not args.token:
+        print("Error: Either --credentials or --token must be specified")
+        sys.exit(1)
+
     # Initialize credentials and Drive API service
-    creds = get_credentials(args.credentials)
+    creds = get_credentials(creds_file=args.credentials, token_json=args.token)
+    if not creds:
+        print("Failed to obtain valid credentials")
+        sys.exit(1)
+
     service = get_drive_service(creds)
 
     # Retrieve metadata for the target folder (name, parent folder, etc.)
