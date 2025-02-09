@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/taross-f/gdarch/actions/workflows/ci.yml/badge.svg)](https://github.com/taross-f/gdarch/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/taross-f/gdarch/branch/main/graph/badge.svg)](https://codecov.io/gh/taross-f/gdarch)
+[![PyPI Downloads](https://static.pepy.tech/badge/gdarch)](https://pepy.tech/projects/gdarch)
 
 A CLI tool to archive Google Drive folders and replace them with compressed archives.
 
