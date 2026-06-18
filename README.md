@@ -19,7 +19,10 @@ This way, you can keep your important data while significantly reducing storage 
 ## Features
 
 - Recursively downloads all files from a specified Google Drive folder
-- Creates a high-compression tar.xz archive
+- Creates a high-compression tar.xz archive (LZMA2, preset 9 + EXTREME)
+- Automatically sizes the LZMA dictionary to the archive so redundancy across
+  files can be exploited for the best possible compression ratio
+- Groups similar files together to further improve solid compression
 - Uploads the archive to the parent folder
 - Optionally deletes the original folder
 
@@ -64,6 +67,9 @@ gdarch --folder-id <TARGET_FOLDER_ID> --credentials credentials.json --delete-fo
 
 # Specify a custom archive name
 gdarch --folder-id <TARGET_FOLDER_ID> --archive-name my_archive.tar.xz --credentials credentials.json
+
+# Push the compression ratio even higher with a larger LZMA dictionary (more RAM)
+gdarch --folder-id <TARGET_FOLDER_ID> --credentials credentials.json --max-dict-size-mib 768
 ```
 
 ### Options
@@ -72,6 +78,11 @@ gdarch --folder-id <TARGET_FOLDER_ID> --archive-name my_archive.tar.xz --credent
 - `--credentials`: Path to OAuth2 credentials file (defaults to credentials.json)
 - `--archive-name`: Name for the uploaded archive file (optional)
 - `--delete-folder`: Delete the original folder after archiving (flag)
+- `--max-dict-size-mib`: Maximum LZMA dictionary size in MiB (default: 256). The
+  dictionary is automatically grown to cover the whole archive (up to this cap),
+  letting LZMA find matches *across* files in the solid stream for a better
+  compression ratio. Larger values can squeeze big folders further but use more
+  memory while compressing (~10.5x the dictionary size).
 
 ### Finding Folder ID
 

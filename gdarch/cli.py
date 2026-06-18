@@ -37,6 +37,38 @@ from googleapiclient.http import MediaFileUpload
 # Google Drive scope with read and write permissions
 SCOPES = ["https://www.googleapis.com/auth/drive"]
 
+# Smallest sensible LZMA2 dictionary size (1 MiB).
+MIN_DICT_SIZE = 1 << 20
+# Default upper bound for the LZMA2 dictionary size (256 MiB).
+# A larger dictionary lets LZMA find matches across the whole solid tar stream
+# (i.e. between different files), which improves the compression ratio for big
+# folders. Memory usage while compressing is roughly 10.5x the dictionary size,
+# so 256 MiB needs ~2.7 GiB of RAM. Raise it with --max-dict-size-mib for an
+# even higher ratio if you have the memory to spare.
+DEFAULT_MAX_DICT_SIZE = 256 << 20
+
+
+def build_lzma_filters(total_size, max_dict_size=DEFAULT_MAX_DICT_SIZE):
+    """
+    Build an LZMA2 filter chain tuned for the best possible compression ratio.
+
+    Uses preset 9 with the EXTREME flag (maximum effort, nice_len=273) and grows
+    the dictionary to the smallest power of two that covers the entire archive,
+    capped at ``max_dict_size``. Sizing the dictionary to the data is what lets
+    the codec exploit redundancy across files in the solid tar stream.
+    """
+    dict_size = MIN_DICT_SIZE
+    while dict_size < total_size and dict_size < max_dict_size:
+        dict_size <<= 1
+    dict_size = max(MIN_DICT_SIZE, min(dict_size, max_dict_size))
+    return [
+        {
+            "id": lzma.FILTER_LZMA2,
+            "preset": 9 | lzma.PRESET_EXTREME,
+            "dict_size": dict_size,
+        }
+    ]
+
 
 def get_credentials(creds_file=None, token_file="token.json", token_json=None):
     """
@@ -148,7 +180,7 @@ class LimitedStream:
         return True
 
 
-def create_archive(service, creds, folder_id, archive_path):
+def create_archive(service, creds, folder_id, archive_path, max_dict_size=DEFAULT_MAX_DICT_SIZE):
     """
     Download files under the specified folder_id and create a highly compressed LZMA archive at archive_path.
     Uses maximum compression settings for best compression ratio.
@@ -160,19 +192,27 @@ def create_archive(service, creds, folder_id, archive_path):
         print("No files found in the specified folder.")
         return False
 
+    total_size = sum(int(f["size"]) for f in files)
+    processed_size = 0
+
+    # Group similar files together (by extension, then path) so that the solid
+    # LZMA stream can exploit redundancy between related files for a better ratio.
+    files.sort(
+        key=lambda f: (os.path.splitext(f["relative_path"])[1].lower(), f["relative_path"].lower())
+    )
+
+    filters = build_lzma_filters(total_size, max_dict_size=max_dict_size)
+    print(f"Using LZMA dictionary size: {filters[0]['dict_size'] >> 20} MiB")
+
     try:
-        # Open tar.xz with maximum compression settings
-        tar = tarfile.open(
-            archive_path,
-            mode="w:xz",
-            preset=9 | lzma.PRESET_EXTREME,
-        )
+        # Open tar.xz with a custom LZMA2 filter chain for maximum compression.
+        # tarfile.open does not accept custom filters, so wrap an LZMAFile and
+        # stream the tar into it.
+        xz_stream = lzma.LZMAFile(archive_path, mode="wb", format=lzma.FORMAT_XZ, filters=filters)
+        tar = tarfile.open(fileobj=xz_stream, mode="w|", format=tarfile.GNU_FORMAT)
     except Exception as e:
         print("Failed to create archive file:", e)
         return False
-
-    total_size = sum(int(f["size"]) for f in files)
-    processed_size = 0
 
     for f in files:
         rel_path = f["relative_path"]
@@ -205,6 +245,7 @@ def create_archive(service, creds, folder_id, archive_path):
             continue
 
     tar.close()
+    xz_stream.close()
     return True
 
 
@@ -255,7 +296,19 @@ def main():
         action="store_true",
         help="Delete the original folder after archiving",
     )
+    parser.add_argument(
+        "--max-dict-size-mib",
+        type=int,
+        default=DEFAULT_MAX_DICT_SIZE >> 20,
+        help="Maximum LZMA dictionary size in MiB (default: %(default)s). Larger "
+        "values improve the compression ratio for big folders but use more "
+        "memory (~10.5x the dictionary size while compressing).",
+    )
     args = parser.parse_args()
+
+    if args.max_dict_size_mib < 1:
+        print("Error: --max-dict-size-mib must be at least 1")
+        sys.exit(1)
 
     if not args.credentials and not args.token:
         print("Error: Either --credentials or --token must be specified")
@@ -286,7 +339,13 @@ def main():
     archive_path = os.path.join(temp_dir, archive_name)
     print("Creating archive at temporary location:", archive_path)
 
-    if not create_archive(service, creds, args.folder_id, archive_path):
+    if not create_archive(
+        service,
+        creds,
+        args.folder_id,
+        archive_path,
+        max_dict_size=args.max_dict_size_mib << 20,
+    ):
         print("Failed to create archive.")
         shutil.rmtree(temp_dir)
         sys.exit(1)
