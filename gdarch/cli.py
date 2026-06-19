@@ -60,7 +60,8 @@ def build_lzma_filters(total_size, max_dict_size=DEFAULT_MAX_DICT_SIZE):
     dict_size = MIN_DICT_SIZE
     while dict_size < total_size and dict_size < max_dict_size:
         dict_size <<= 1
-    dict_size = max(MIN_DICT_SIZE, min(dict_size, max_dict_size))
+    # Doubling can overshoot a non-power-of-two cap, so clamp back down.
+    dict_size = min(dict_size, max_dict_size)
     return [
         {
             "id": lzma.FILTER_LZMA2,
@@ -214,38 +215,42 @@ def create_archive(service, creds, folder_id, archive_path, max_dict_size=DEFAUL
         print("Failed to create archive file:", e)
         return False
 
-    for f in files:
-        rel_path = f["relative_path"]
-        file_id = f["id"]
-        try:
-            file_size = int(f["size"])
-        except Exception as e:
-            print("Invalid size info for file, skipping:", rel_path)
-            continue
-
-        print(
-            f"Adding to archive: {rel_path} ({file_size} bytes) - {processed_size * 100 / total_size:.1f}% complete"
-        )
-        url = "https://www.googleapis.com/drive/v3/files/{}?alt=media".format(file_id)
-        headers = {"Authorization": "Bearer " + creds.token}
-        try:
-            # Download file in streaming mode
-            response = requests.get(url, headers=headers, stream=True)
-            if response.status_code != 200:
-                print("  [ERROR] Failed to download file. HTTP status code:", response.status_code)
+    # Close the tar before the xz stream (reverse open order) so the archive is
+    # finalized and flushed even if an error escapes the loop.
+    with xz_stream, tar:
+        for f in files:
+            rel_path = f["relative_path"]
+            file_id = f["id"]
+            try:
+                file_size = int(f["size"])
+            except Exception as e:
+                print("Invalid size info for file, skipping:", rel_path)
                 continue
-            response.raw.decode_content = True
-            limited_stream = LimitedStream(response.raw, file_size)
-            tarinfo = tarfile.TarInfo(name=rel_path)
-            tarinfo.size = file_size
-            tar.addfile(tarinfo, fileobj=limited_stream)
-            processed_size += file_size
-        except Exception as e:
-            print("  [ERROR] Error while adding file to archive:", e)
-            continue
 
-    tar.close()
-    xz_stream.close()
+            print(
+                f"Adding to archive: {rel_path} ({file_size} bytes) - {processed_size * 100 / total_size:.1f}% complete"
+            )
+            url = "https://www.googleapis.com/drive/v3/files/{}?alt=media".format(file_id)
+            headers = {"Authorization": "Bearer " + creds.token}
+            try:
+                # Download file in streaming mode
+                response = requests.get(url, headers=headers, stream=True)
+                if response.status_code != 200:
+                    print(
+                        "  [ERROR] Failed to download file. HTTP status code:",
+                        response.status_code,
+                    )
+                    continue
+                response.raw.decode_content = True
+                limited_stream = LimitedStream(response.raw, file_size)
+                tarinfo = tarfile.TarInfo(name=rel_path)
+                tarinfo.size = file_size
+                tar.addfile(tarinfo, fileobj=limited_stream)
+                processed_size += file_size
+            except Exception as e:
+                print("  [ERROR] Error while adding file to archive:", e)
+                continue
+
     return True
 
 
