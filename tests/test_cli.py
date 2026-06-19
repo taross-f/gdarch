@@ -1,3 +1,4 @@
+import lzma
 import os
 import tempfile
 from io import BytesIO
@@ -8,7 +9,10 @@ from google.oauth2.credentials import Credentials
 from googleapiclient import discovery
 
 from gdarch.cli import (
+    DEFAULT_MAX_DICT_SIZE,
+    MIN_DICT_SIZE,
     LimitedStream,
+    build_lzma_filters,
     create_archive,
     delete_file_or_folder,
     get_credentials,
@@ -350,6 +354,82 @@ def test_get_credentials_from_token_json():
 
         assert creds == mock_creds
         mock_from_info.assert_called_once()
+
+
+def test_build_lzma_filters_structure():
+    # フィルタは最大圧縮設定のLZMA2チェーンを返す
+    filters = build_lzma_filters(1024)
+    assert len(filters) == 1
+    assert filters[0]["id"] == lzma.FILTER_LZMA2
+    assert filters[0]["preset"] == (9 | lzma.PRESET_EXTREME)
+
+
+def test_build_lzma_filters_uses_minimum_for_small_data():
+    # 小さいデータでは最小辞書サイズが使われる
+    assert build_lzma_filters(0)[0]["dict_size"] == MIN_DICT_SIZE
+    assert build_lzma_filters(1)[0]["dict_size"] == MIN_DICT_SIZE
+    assert build_lzma_filters(MIN_DICT_SIZE)[0]["dict_size"] == MIN_DICT_SIZE
+
+
+def test_build_lzma_filters_rounds_up_to_power_of_two():
+    # データを覆う最小の2の冪に切り上げる
+    assert build_lzma_filters(5 * MIN_DICT_SIZE)[0]["dict_size"] == 8 * MIN_DICT_SIZE
+    assert build_lzma_filters(MIN_DICT_SIZE + 1)[0]["dict_size"] == 2 * MIN_DICT_SIZE
+
+
+def test_build_lzma_filters_caps_at_max():
+    # 巨大なデータでも上限を超えない
+    huge = DEFAULT_MAX_DICT_SIZE * 16
+    assert build_lzma_filters(huge)[0]["dict_size"] == DEFAULT_MAX_DICT_SIZE
+
+
+def test_build_lzma_filters_clamps_non_power_of_two_cap():
+    # 非2冪の上限でも、倍々で超過した分はクランプされる
+    cap = 768 << 20  # 512 + 256 MiB (2の冪ではない)
+    huge = cap * 16
+    assert build_lzma_filters(huge, max_dict_size=cap)[0]["dict_size"] == cap
+
+
+@patch("gdarch.cli.get_credentials")
+@patch("gdarch.cli.get_drive_service")
+def test_main_invalid_max_dict_size(mock_drive_service, mock_creds, mock_service):
+    # --max-dict-size-mib が1未満なら終了コード1で終了する
+    mock_creds.return_value = MagicMock()
+    mock_drive_service.return_value = mock_service
+
+    test_args = [
+        "--folder-id",
+        "test123",
+        "--credentials",
+        "test_creds.json",
+        "--max-dict-size-mib",
+        "0",
+    ]
+    with patch("sys.argv", ["gdarch"] + test_args):
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 1
+
+
+@patch("requests.get")
+def test_create_archive_respects_max_dict_size(
+    mock_get, mock_service, mock_credentials, mock_response, tmp_path
+):
+    # カスタムの max_dict_size を渡してもアーカイブが作成される
+    mock_get.return_value = mock_response
+    archive_path = tmp_path / "custom_dict.tar.xz"
+
+    result = create_archive(
+        mock_service,
+        mock_credentials,
+        "test_folder",
+        str(archive_path),
+        max_dict_size=MIN_DICT_SIZE,
+    )
+
+    assert result is True
+    assert os.path.exists(archive_path)
+    assert os.path.getsize(archive_path) > 0
 
 
 def test_get_credentials_invalid_token_json():
