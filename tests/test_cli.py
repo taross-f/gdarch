@@ -1,5 +1,6 @@
 import lzma
 import os
+import tarfile
 import tempfile
 from io import BytesIO
 from unittest.mock import MagicMock, patch
@@ -440,3 +441,71 @@ def test_get_credentials_invalid_token_json():
         creds = get_credentials(token_json=token_json)
         assert creds is None
         mock_from_info.assert_not_called()
+
+
+def _download_by_file_id(contents):
+    """contents: {file_id: bytes} -> requests.get の side_effect を返す。
+
+    create_archive が組み立てる /files/<id>?alt=media の URL から file_id を
+    取り出し、対応する内容をストリームとして返す。
+    """
+
+    def fake_get(url, headers=None, stream=False):
+        file_id = url.split("/files/")[1].split("?")[0]
+        response = MagicMock()
+        response.status_code = 200
+        response.raw = BytesIO(contents[file_id])
+        response.raw.decode_content = True
+        return response
+
+    return fake_get
+
+
+@patch("requests.get")
+@patch("gdarch.cli.list_files")
+def test_create_archive_sorts_files_by_extension_then_path(
+    mock_list_files, mock_get, mock_service, mock_credentials, tmp_path
+):
+    # 拡張子→パスの順に並べ替えられ、アーカイブ内の並びへ反映される
+    mock_list_files.return_value = [
+        {"id": "b", "relative_path": "b.txt", "size": "3"},
+        {"id": "a", "relative_path": "a.md", "size": "2"},
+        {"id": "c", "relative_path": "sub/c.txt", "size": "4"},
+    ]
+    contents = {"a": b"AA", "b": b"BBB", "c": b"CCCC"}
+    mock_get.side_effect = _download_by_file_id(contents)
+
+    archive_path = tmp_path / "sorted.tar.xz"
+    result = create_archive(mock_service, mock_credentials, "test_folder", str(archive_path))
+
+    assert result is True
+    with tarfile.open(archive_path, "r:xz") as tar:
+        names = tar.getnames()
+    # .md (a.md) -> .txt (b.txt) -> .txt (sub/c.txt) の順
+    assert names == ["a.md", "b.txt", "sub/c.txt"]
+
+
+@patch("requests.get")
+@patch("gdarch.cli.list_files")
+def test_create_archive_roundtrip_preserves_contents_and_paths(
+    mock_list_files, mock_get, mock_service, mock_credentials, tmp_path
+):
+    # 展開すると元のパス構造と内容が完全に復元される
+    mock_list_files.return_value = [
+        {"id": "root", "relative_path": "readme.txt", "size": "5"},
+        {"id": "nested", "relative_path": "dir/sub/data.bin", "size": "6"},
+    ]
+    contents = {"root": b"hello", "nested": b"\x00\x01\x02\x03\x04\x05"}
+    mock_get.side_effect = _download_by_file_id(contents)
+
+    archive_path = tmp_path / "roundtrip.tar.xz"
+    result = create_archive(mock_service, mock_credentials, "test_folder", str(archive_path))
+
+    assert result is True
+    with tarfile.open(archive_path, "r:xz") as tar:
+        extracted = {member.name: tar.extractfile(member).read() for member in tar.getmembers()}
+
+    assert extracted == {
+        "readme.txt": b"hello",
+        "dir/sub/data.bin": b"\x00\x01\x02\x03\x04\x05",
+    }
