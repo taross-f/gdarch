@@ -193,7 +193,23 @@ def create_archive(service, creds, folder_id, archive_path, max_dict_size=DEFAUL
         print("No files found in the specified folder.")
         return False
 
-    total_size = sum(int(f["size"]) for f in files)
+    # Parse each size once up front. Files without a usable size are dropped here
+    # (instead of crashing the total-size sum) and the parsed value is reused in
+    # the loop below, avoiding a second int() conversion per file.
+    valid_files = []
+    for f in files:
+        try:
+            f["size_bytes"] = int(f["size"])
+        except (KeyError, ValueError, TypeError):
+            print("Invalid size info for file, skipping:", f.get("relative_path"))
+            continue
+        valid_files.append(f)
+    files = valid_files
+    if not files:
+        print("No files with valid size information to archive.")
+        return False
+
+    total_size = sum(f["size_bytes"] for f in files)
     processed_size = 0
 
     # Group similar files together (by extension, then path) so that the solid
@@ -215,26 +231,25 @@ def create_archive(service, creds, folder_id, archive_path, max_dict_size=DEFAUL
         print("Failed to create archive file:", e)
         return False
 
-    # Close the tar before the xz stream (reverse open order) so the archive is
-    # finalized and flushed even if an error escapes the loop.
-    with xz_stream, tar:
+    # Reuse a single HTTP session so all downloads share one keep-alive
+    # connection (one TLS handshake instead of one per file) and set the auth
+    # header once. Close the tar before the xz stream (reverse open order) so the
+    # archive is finalized and flushed even if an error escapes the loop.
+    session = requests.Session()
+    session.headers["Authorization"] = "Bearer " + creds.token
+    with xz_stream, tar, session:
         for f in files:
             rel_path = f["relative_path"]
             file_id = f["id"]
-            try:
-                file_size = int(f["size"])
-            except Exception as e:
-                print("Invalid size info for file, skipping:", rel_path)
-                continue
+            file_size = f["size_bytes"]
 
             print(
                 f"Adding to archive: {rel_path} ({file_size} bytes) - {processed_size * 100 / total_size:.1f}% complete"
             )
             url = "https://www.googleapis.com/drive/v3/files/{}?alt=media".format(file_id)
-            headers = {"Authorization": "Bearer " + creds.token}
             try:
                 # Download file in streaming mode
-                response = requests.get(url, headers=headers, stream=True)
+                response = session.get(url, stream=True)
                 if response.status_code != 200:
                     print(
                         "  [ERROR] Failed to download file. HTTP status code:",
@@ -370,5 +385,5 @@ def main():
     print("Operation completed successfully. Enjoy your productive day!")
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     main()

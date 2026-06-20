@@ -231,7 +231,7 @@ def test_limited_stream_exact_size():
     assert data == test_data
 
 
-@patch("requests.get")
+@patch("requests.Session.get")
 def test_create_archive_success(mock_get, mock_service, mock_credentials, mock_response, tmp_path):
     # モックの設定
     mock_get.return_value = mock_response
@@ -247,7 +247,7 @@ def test_create_archive_success(mock_get, mock_service, mock_credentials, mock_r
     assert os.path.getsize(archive_path) > 0
 
 
-@patch("requests.get")
+@patch("requests.Session.get")
 def test_create_archive_empty_folder(mock_get, mock_service, mock_credentials, tmp_path):
     # 空のフォルダをシミュレート
     mock_service.files.return_value.list.return_value.execute.return_value = {"files": []}
@@ -262,7 +262,7 @@ def test_create_archive_empty_folder(mock_get, mock_service, mock_credentials, t
     assert not os.path.exists(archive_path)
 
 
-@patch("requests.get")
+@patch("requests.Session.get")
 def test_create_archive_download_error(mock_get, mock_service, mock_credentials, tmp_path):
     # ダウンロードエラーをシミュレート
     mock_response = MagicMock()
@@ -277,6 +277,52 @@ def test_create_archive_download_error(mock_get, mock_service, mock_credentials,
 
     assert result is True  # エラーファイルはスキップされるため、全体としては成功
     assert os.path.exists(archive_path)
+
+
+@patch("gdarch.cli.lzma.LZMAFile", side_effect=OSError("disk full"))
+def test_create_archive_open_failure(mock_lzma, mock_service, mock_credentials, tmp_path):
+    # アーカイブファイルのオープンに失敗したら False を返す
+    archive_path = tmp_path / "open_fail.tar.xz"
+
+    result = create_archive(mock_service, mock_credentials, "test_folder", str(archive_path))
+
+    assert result is False
+
+
+@patch("requests.Session.get")
+@patch("gdarch.cli.list_files")
+def test_create_archive_skips_invalid_size(
+    mock_list_files, mock_get, mock_service, mock_credentials, mock_response, tmp_path
+):
+    # サイズが数値でないファイルはスキップし、残りはアーカイブされる
+    mock_list_files.return_value = [
+        {"id": "bad", "relative_path": "broken.txt", "size": "not-a-number"},
+        {"id": "ok", "relative_path": "good.txt", "size": "12"},
+    ]
+    mock_get.return_value = mock_response
+
+    archive_path = tmp_path / "skip_invalid.tar.xz"
+    result = create_archive(mock_service, mock_credentials, "test_folder", str(archive_path))
+
+    assert result is True
+    with tarfile.open(archive_path, "r:xz") as tar:
+        assert tar.getnames() == ["good.txt"]
+
+
+@patch("gdarch.cli.list_files")
+def test_create_archive_all_invalid_sizes(
+    mock_list_files, mock_service, mock_credentials, tmp_path
+):
+    # 全ファイルのサイズが不正なら False を返す
+    mock_list_files.return_value = [
+        {"id": "bad", "relative_path": "broken.txt", "size": "oops"},
+    ]
+    archive_path = tmp_path / "all_invalid.tar.xz"
+
+    result = create_archive(mock_service, mock_credentials, "test_folder", str(archive_path))
+
+    assert result is False
+    assert not os.path.exists(archive_path)
 
 
 @patch("gdarch.cli.get_credentials")
@@ -412,7 +458,7 @@ def test_main_invalid_max_dict_size(mock_drive_service, mock_creds, mock_service
         assert exc_info.value.code == 1
 
 
-@patch("requests.get")
+@patch("requests.Session.get")
 def test_create_archive_respects_max_dict_size(
     mock_get, mock_service, mock_credentials, mock_response, tmp_path
 ):
@@ -461,7 +507,7 @@ def _download_by_file_id(contents):
     return fake_get
 
 
-@patch("requests.get")
+@patch("requests.Session.get")
 @patch("gdarch.cli.list_files")
 def test_create_archive_sorts_files_by_extension_then_path(
     mock_list_files, mock_get, mock_service, mock_credentials, tmp_path
@@ -485,7 +531,7 @@ def test_create_archive_sorts_files_by_extension_then_path(
     assert names == ["a.md", "b.txt", "sub/c.txt"]
 
 
-@patch("requests.get")
+@patch("requests.Session.get")
 @patch("gdarch.cli.list_files")
 def test_create_archive_roundtrip_preserves_contents_and_paths(
     mock_list_files, mock_get, mock_service, mock_credentials, tmp_path
@@ -509,3 +555,75 @@ def test_create_archive_roundtrip_preserves_contents_and_paths(
         "readme.txt": b"hello",
         "dir/sub/data.bin": b"\x00\x01\x02\x03\x04\x05",
     }
+
+
+def test_list_files_skips_files_without_size(mock_service):
+    # サイズ情報のないファイル(Googleドキュメント等)はスキップされる
+    mock_service.files.return_value.list.return_value.execute.return_value = {
+        "files": [
+            {"id": "doc1", "name": "doc.gdoc", "mimeType": "application/vnd.google-apps.document"},
+            {"id": "file1", "name": "real.txt", "mimeType": "text/plain", "size": "10"},
+        ]
+    }
+
+    files = list_files(mock_service, "root")
+
+    assert len(files) == 1
+    assert files[0]["id"] == "file1"
+
+
+def test_get_credentials_refresh_failure(tmp_path):
+    # リフレッシュに失敗し、フォールバックする認証情報もなければ None を返す
+    token_file = tmp_path / "token.json"
+    token_file.write_text('{"token": "expired_token"}')
+
+    with patch("google.oauth2.credentials.Credentials.from_authorized_user_file") as mock_from_file:
+        mock_creds = MagicMock()
+        mock_creds.valid = False
+        mock_creds.expired = True
+        mock_creds.refresh_token = True
+        mock_creds.refresh.side_effect = Exception("refresh failed")
+        mock_from_file.return_value = mock_creds
+
+        creds = get_credentials(creds_file=None, token_file=str(token_file))
+
+        assert creds is None
+
+
+def test_main_requires_credentials_or_token():
+    # --credentials も --token も無ければ終了コード1で終了する
+    with patch("sys.argv", ["gdarch", "--folder-id", "test123"]):
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 1
+
+
+@patch("gdarch.cli.get_credentials")
+def test_main_invalid_credentials(mock_creds):
+    # 認証情報を取得できなければ終了コード1で終了する
+    mock_creds.return_value = None
+    with patch("sys.argv", ["gdarch", "--folder-id", "test123", "--credentials", "c.json"]):
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 1
+
+
+@patch("gdarch.cli.delete_file_or_folder")
+@patch("gdarch.cli.get_credentials")
+@patch("gdarch.cli.get_drive_service")
+@patch("gdarch.cli.create_archive")
+@patch("gdarch.cli.upload_file")
+def test_main_delete_folder(
+    mock_upload, mock_create, mock_drive_service, mock_creds, mock_delete, mock_service
+):
+    # --delete-folder 指定時は元フォルダを削除する
+    mock_creds.return_value = MagicMock()
+    mock_drive_service.return_value = mock_service
+    mock_create.return_value = True
+    mock_upload.return_value = "uploaded123"
+
+    test_args = ["--folder-id", "test123", "--credentials", "c.json", "--delete-folder"]
+    with patch("sys.argv", ["gdarch"] + test_args):
+        main()
+
+    mock_delete.assert_called_once_with(mock_service, "test123")
