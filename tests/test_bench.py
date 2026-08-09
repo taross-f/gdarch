@@ -1,5 +1,6 @@
 """Smoke tests for the benchmark harness, so it cannot silently rot."""
 
+import hashlib
 import json
 import os
 
@@ -8,11 +9,21 @@ import pytest
 from bench import benchmark, corpora
 
 
-def test_every_corpus_is_deterministic_and_non_empty():
-    for name in corpora.DEFAULT_CORPORA:
-        first = corpora.build(name, scale=1)
-        assert first, f"{name} produced no files"
-        assert first == corpora.build(name, scale=1)
+@pytest.mark.parametrize("name", corpora.DEFAULT_CORPORA)
+def test_every_corpus_is_deterministic_and_non_empty(name):
+    # Reproducibility is the whole premise of the suite: two runs of the same
+    # seed must produce identical bytes, or benchmark numbers cannot be compared
+    # across machines. Digests are compared so the corpora are not held twice.
+    def digest():
+        files = corpora.build(name, scale=1)
+        assert files, f"{name} produced no files"
+        h = hashlib.sha256()
+        for path, data in files:
+            h.update(path.encode())
+            h.update(data)
+        return h.hexdigest()
+
+    assert digest() == digest()
 
 
 def test_corpus_scale_grows_the_payload():
