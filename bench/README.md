@@ -113,5 +113,25 @@ halves of the change push on this: dedup rescues the left side, and sizing the
 dictionary from free memory (up to 1 GiB rather than a fixed 256 MiB) moves the
 step four times further to the right.
 
-Folders with no duplicate content — `mixed` here — sit at the flat end of that
-curve at every cap, and gain only the filter tuning.
+Where the copies happen to sit close together in the stream, or where there are
+no copies at all, the curve is flat instead — the same sweep over `dupes`
+(4.5 MiB, sibling folders that sort next to each other) and `mixed` (27.0 MiB,
+no duplicate content):
+
+| dict cap | `dupes` delta | `mixed` delta |
+|----------|---------------|---------------|
+| 1 MiB    | −0.91%        | −0.03%        |
+| 2 MiB    | −0.97%        | −0.08%        |
+| 4 MiB    | −0.97%        | −0.05%        |
+| 8 MiB    | −0.97%        | −0.06%        |
+| 16 MiB   | −0.97%        | −0.06%        |
+
+`dupes` still downloads 87% fewer bytes at every cap; what it does not do is get
+smaller, because a 1 MiB window is already wide enough to reach the copy. So the
+archive-size win is not a property of having duplicates — it is a property of
+having duplicates *farther apart than the window*, which is what separates a real
+multi-gigabyte drive from a corpus that fits in RAM.
+
+`mixed` is the honest floor: no duplicates, dominated by JPEG and docx payloads
+that are already entropy-coded. Nothing here helps it at any window size, beyond
+the ~0.05% from filter tuning.
