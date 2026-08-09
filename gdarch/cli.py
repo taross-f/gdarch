@@ -18,7 +18,6 @@ Usage Examples:
 """
 
 import argparse
-import io
 import lzma
 import os
 import posixpath
@@ -34,41 +33,27 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
+from gdarch.compression import (
+    DEFAULT_MAX_DICT_SIZE,
+    MIN_DICT_SIZE,
+    auto_max_dict_size,
+    build_lzma_filters,
+    order_files,
+    text_byte_ratio,
+    write_files,
+)
+
 # Google Drive scope with read and write permissions
 SCOPES = ["https://www.googleapis.com/auth/drive"]
 
-# Smallest sensible LZMA2 dictionary size (1 MiB).
-MIN_DICT_SIZE = 1 << 20
-# Default upper bound for the LZMA2 dictionary size (256 MiB).
-# A larger dictionary lets LZMA find matches across the whole solid tar stream
-# (i.e. between different files), which improves the compression ratio for big
-# folders. Memory usage while compressing is roughly 10.5x the dictionary size,
-# so 256 MiB needs ~2.7 GiB of RAM. Raise it with --max-dict-size-mib for an
-# even higher ratio if you have the memory to spare.
-DEFAULT_MAX_DICT_SIZE = 256 << 20
-
-
-def build_lzma_filters(total_size, max_dict_size=DEFAULT_MAX_DICT_SIZE):
-    """
-    Build an LZMA2 filter chain tuned for the best possible compression ratio.
-
-    Uses preset 9 with the EXTREME flag (maximum effort, nice_len=273) and grows
-    the dictionary to the smallest power of two that covers the entire archive,
-    capped at ``max_dict_size``. Sizing the dictionary to the data is what lets
-    the codec exploit redundancy across files in the solid tar stream.
-    """
-    dict_size = MIN_DICT_SIZE
-    while dict_size < total_size and dict_size < max_dict_size:
-        dict_size <<= 1
-    # Doubling can overshoot a non-power-of-two cap, so clamp back down.
-    dict_size = min(dict_size, max_dict_size)
-    return [
-        {
-            "id": lzma.FILTER_LZMA2,
-            "preset": 9 | lzma.PRESET_EXTREME,
-            "dict_size": dict_size,
-        }
-    ]
+# Metadata requested for every file. The checksums ride along with the listing
+# for free and let identical files be recognised without downloading them twice.
+# sha256Checksum is a comparatively recent addition to the Drive v3 File
+# resource, and Drive rejects an entire request that names a field it does not
+# know, so BASIC_FILE_FIELDS is kept as a fallback rather than risking the whole
+# listing on it.
+FILE_FIELDS = "id, name, mimeType, size, md5Checksum, sha256Checksum"
+BASIC_FILE_FIELDS = "id, name, mimeType, size, md5Checksum"
 
 
 def get_credentials(creds_file=None, token_file="token.json", token_json=None):
@@ -115,32 +100,46 @@ def get_drive_service(creds):
     return build("drive", "v3", credentials=creds)
 
 
-def list_files(service, folder_id, parent_path=""):
+def list_files(service, folder_id, parent_path="", fields=None):
     """
     Recursively list all files under the specified folder_id.
-    Returns a list of dictionaries with keys: id, name, mimeType, size, relative_path.
+    Returns a list of dictionaries with keys: id, name, mimeType, size, relative_path
+    and, when Drive provides them, md5Checksum / sha256Checksum.
     Files without size information (e.g. Google Docs) are skipped.
+
+    ``fields`` is a single-element list shared with the recursive calls: if Drive
+    refuses the extended field selection the whole run drops to the basic one,
+    rather than each subfolder rediscovering the same rejection.
     """
+    if fields is None:
+        fields = [FILE_FIELDS]
     results = []
     page_token = None
     query = "'{}' in parents".format(folder_id)
     while True:
-        response = (
-            service.files()
-            .list(
-                q=query,
-                fields="nextPageToken, files(id, name, mimeType, size)",
-                pageToken=page_token,
-                pageSize=1000,
+        try:
+            response = (
+                service.files()
+                .list(
+                    q=query,
+                    fields=f"nextPageToken, files({fields[0]})",
+                    pageToken=page_token,
+                    pageSize=1000,
+                )
+                .execute()
             )
-            .execute()
-        )
+        except Exception:
+            if fields[0] == BASIC_FILE_FIELDS:
+                raise
+            print("Drive rejected the extended field selection; retrying without sha256Checksum")
+            fields[0] = BASIC_FILE_FIELDS
+            continue
 
         for f in response.get("files", []):
             file_path = posixpath.join(parent_path, f["name"])
             if f["mimeType"] == "application/vnd.google-apps.folder":
                 # Recursively process subfolders
-                results.extend(list_files(service, f["id"], file_path))
+                results.extend(list_files(service, f["id"], file_path, fields))
             else:
                 if "size" in f:
                     f["relative_path"] = file_path
@@ -181,7 +180,9 @@ class LimitedStream:
         return True
 
 
-def create_archive(service, creds, folder_id, archive_path, max_dict_size=DEFAULT_MAX_DICT_SIZE):
+def create_archive(
+    service, creds, folder_id, archive_path, max_dict_size=DEFAULT_MAX_DICT_SIZE, deduplicate=True
+):
     """
     Download files under the specified folder_id and create a highly compressed LZMA archive at archive_path.
     Uses maximum compression settings for best compression ratio.
@@ -194,8 +195,8 @@ def create_archive(service, creds, folder_id, archive_path, max_dict_size=DEFAUL
         return False
 
     # Parse each size once up front. Files without a usable size are dropped here
-    # (instead of crashing the total-size sum) and the parsed value is reused in
-    # the loop below, avoiding a second int() conversion per file.
+    # (instead of crashing the total-size sum) and the parsed value is reused
+    # later, avoiding a second int() conversion per file.
     valid_files = []
     for f in files:
         try:
@@ -210,16 +211,17 @@ def create_archive(service, creds, folder_id, archive_path, max_dict_size=DEFAUL
         return False
 
     total_size = sum(f["size_bytes"] for f in files)
-    processed_size = 0
 
-    # Group similar files together (by extension, then path) so that the solid
-    # LZMA stream can exploit redundancy between related files for a better ratio.
-    files.sort(
-        key=lambda f: (os.path.splitext(f["relative_path"])[1].lower(), f["relative_path"].lower())
+    # Group similar files together and push already-compressed formats to the
+    # end, so the solid LZMA stream can exploit redundancy between related files.
+    files = order_files(files)
+
+    filters = build_lzma_filters(
+        total_size, max_dict_size=max_dict_size, text_ratio=text_byte_ratio(files)
     )
-
-    filters = build_lzma_filters(total_size, max_dict_size=max_dict_size)
     print(f"Using LZMA dictionary size: {filters[0]['dict_size'] >> 20} MiB")
+    if "pb" in filters[0]:
+        print("Text-dominated payload detected: using pb=0 for a tighter context model")
 
     try:
         # Open tar.xz with a custom LZMA2 filter chain for maximum compression.
@@ -237,34 +239,34 @@ def create_archive(service, creds, folder_id, archive_path, max_dict_size=DEFAUL
     # archive is finalized and flushed even if an error escapes the loop.
     session = requests.Session()
     session.headers["Authorization"] = "Bearer " + creds.token
-    with xz_stream, tar, session:
-        for f in files:
-            rel_path = f["relative_path"]
-            file_id = f["id"]
-            file_size = f["size_bytes"]
 
-            print(
-                f"Adding to archive: {rel_path} ({file_size} bytes) - {processed_size * 100 / total_size:.1f}% complete"
-            )
-            url = "https://www.googleapis.com/drive/v3/files/{}?alt=media".format(file_id)
-            try:
-                # Download file in streaming mode
-                response = session.get(url, stream=True)
-                if response.status_code != 200:
-                    print(
-                        "  [ERROR] Failed to download file. HTTP status code:",
-                        response.status_code,
-                    )
-                    continue
-                response.raw.decode_content = True
-                limited_stream = LimitedStream(response.raw, file_size)
-                tarinfo = tarfile.TarInfo(name=rel_path)
-                tarinfo.size = file_size
-                tar.addfile(tarinfo, fileobj=limited_stream)
-                processed_size += file_size
-            except Exception as e:
-                print("  [ERROR] Error while adding file to archive:", e)
-                continue
+    def open_stream(entry):
+        url = "https://www.googleapis.com/drive/v3/files/{}?alt=media".format(entry["id"])
+        try:
+            response = session.get(url, stream=True)
+            if response.status_code != 200:
+                print(
+                    "  [ERROR] Failed to download file. HTTP status code:",
+                    response.status_code,
+                )
+                return None
+            response.raw.decode_content = True
+            return LimitedStream(response.raw, entry["size_bytes"])
+        except Exception as e:
+            print("  [ERROR] Error while downloading file:", e)
+            return None
+
+    with xz_stream, tar, session:
+        stats = write_files(tar, files, open_stream, log=print, deduplicate=deduplicate)
+
+    if stats.bytes_deduplicated:
+        print(
+            f"Deduplicated {stats.files_linked} file(s), "
+            f"{stats.bytes_deduplicated} bytes never downloaded or stored "
+            f"({stats.bytes_deduplicated * 100 / total_size:.1f}% of the payload)"
+        )
+    if stats.files_failed:
+        print(f"Warning: {stats.files_failed} file(s) could not be archived")
 
     return True
 
@@ -318,17 +320,35 @@ def main():
     )
     parser.add_argument(
         "--max-dict-size-mib",
-        type=int,
-        default=DEFAULT_MAX_DICT_SIZE >> 20,
-        help="Maximum LZMA dictionary size in MiB (default: %(default)s). Larger "
-        "values improve the compression ratio for big folders but use more "
-        "memory (~10.5x the dictionary size while compressing).",
+        default="auto",
+        help="Maximum LZMA dictionary size in MiB, or 'auto' (default) to size "
+        "it from the free memory on this machine. A bigger dictionary widens "
+        "the window in which LZMA can match data across files, which is what "
+        "drives the ratio on large folders, but costs ~10.5x the dictionary "
+        "size in RAM while compressing.",
+    )
+    parser.add_argument(
+        "--no-dedup",
+        action="store_true",
+        help="Do not collapse byte-identical files into hard links. Dedup uses "
+        "the checksums Drive already reports, so duplicates are neither "
+        "downloaded nor stored; disable it only if your extraction tool "
+        "cannot handle hard links.",
     )
     args = parser.parse_args()
 
-    if args.max_dict_size_mib < 1:
-        print("Error: --max-dict-size-mib must be at least 1")
-        sys.exit(1)
+    if str(args.max_dict_size_mib).lower() == "auto":
+        max_dict_size = auto_max_dict_size()
+        print(f"Auto-selected maximum LZMA dictionary size: {max_dict_size >> 20} MiB")
+    else:
+        try:
+            max_dict_size_mib = int(args.max_dict_size_mib)
+        except (TypeError, ValueError):
+            max_dict_size_mib = 0
+        if max_dict_size_mib < 1:
+            print("Error: --max-dict-size-mib must be at least 1, or 'auto'")
+            sys.exit(1)
+        max_dict_size = max_dict_size_mib << 20
 
     if not args.credentials and not args.token:
         print("Error: Either --credentials or --token must be specified")
@@ -364,7 +384,8 @@ def main():
         creds,
         args.folder_id,
         archive_path,
-        max_dict_size=args.max_dict_size_mib << 20,
+        max_dict_size=max_dict_size,
+        deduplicate=not args.no_dedup,
     ):
         print("Failed to create archive.")
         shutil.rmtree(temp_dir)
