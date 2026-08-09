@@ -10,14 +10,19 @@ jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
 
+    env:
+      # Empty for Dependabot / forked PRs, which do not get repository secrets.
+      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -30,7 +35,7 @@ jobs:
 
       - name: Load cached venv
         id: cached-poetry-dependencies
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: .venv
           key: venv-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('**/poetry.lock') }}
@@ -45,20 +50,23 @@ jobs:
       - name: Run tests
         run: poetry run pytest -v --cov=gdarch --cov-report=xml
 
+      # Skipped when no token is available (Dependabot / forked PRs): tokenless
+      # uploads hit Codecov's rate limit and would fail an otherwise green build.
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v3
+        if: env.CODECOV_TOKEN != ''
+        uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          file: ./coverage.xml
+          files: ./coverage.xml
           fail_ci_if_error: true
 
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
