@@ -786,3 +786,30 @@ def test_main_honours_an_explicit_max_dict_size(
 
     assert mock_create.call_args.kwargs["max_dict_size"] == 64 << 20
     assert mock_create.call_args.kwargs["deduplicate"] is False
+
+
+def test_list_files_falls_back_when_drive_rejects_sha256(mock_service, capsys):
+    # 拡張フィールドが拒否されたら基本フィールドで再試行する
+    listing = {"files": [{"id": "f1", "name": "a.txt", "mimeType": "text/plain", "size": "1"}]}
+    mock_service.files.return_value.list.return_value.execute.side_effect = [
+        Exception("Invalid field selection sha256Checksum"),
+        listing,
+    ]
+
+    files = list_files(mock_service, "root")
+
+    assert [f["relative_path"] for f in files] == ["a.txt"]
+    assert "retrying without sha256Checksum" in capsys.readouterr().out
+    fields_used = [
+        call.kwargs["fields"] for call in mock_service.files.return_value.list.call_args_list
+    ]
+    assert "sha256Checksum" in fields_used[0]
+    assert "sha256Checksum" not in fields_used[1]
+
+
+def test_list_files_reraises_when_the_basic_fields_also_fail(mock_service):
+    # 基本フィールドでも失敗するなら本物のエラーとして伝播させる
+    mock_service.files.return_value.list.return_value.execute.side_effect = Exception("no access")
+
+    with pytest.raises(Exception, match="no access"):
+        list_files(mock_service, "root")

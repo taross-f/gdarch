@@ -48,7 +48,12 @@ SCOPES = ["https://www.googleapis.com/auth/drive"]
 
 # Metadata requested for every file. The checksums ride along with the listing
 # for free and let identical files be recognised without downloading them twice.
+# sha256Checksum is a comparatively recent addition to the Drive v3 File
+# resource, and Drive rejects an entire request that names a field it does not
+# know, so BASIC_FILE_FIELDS is kept as a fallback rather than risking the whole
+# listing on it.
 FILE_FIELDS = "id, name, mimeType, size, md5Checksum, sha256Checksum"
+BASIC_FILE_FIELDS = "id, name, mimeType, size, md5Checksum"
 
 
 def get_credentials(creds_file=None, token_file="token.json", token_json=None):
@@ -95,33 +100,46 @@ def get_drive_service(creds):
     return build("drive", "v3", credentials=creds)
 
 
-def list_files(service, folder_id, parent_path=""):
+def list_files(service, folder_id, parent_path="", fields=None):
     """
     Recursively list all files under the specified folder_id.
     Returns a list of dictionaries with keys: id, name, mimeType, size, relative_path
     and, when Drive provides them, md5Checksum / sha256Checksum.
     Files without size information (e.g. Google Docs) are skipped.
+
+    ``fields`` is a single-element list shared with the recursive calls: if Drive
+    refuses the extended field selection the whole run drops to the basic one,
+    rather than each subfolder rediscovering the same rejection.
     """
+    if fields is None:
+        fields = [FILE_FIELDS]
     results = []
     page_token = None
     query = "'{}' in parents".format(folder_id)
     while True:
-        response = (
-            service.files()
-            .list(
-                q=query,
-                fields=f"nextPageToken, files({FILE_FIELDS})",
-                pageToken=page_token,
-                pageSize=1000,
+        try:
+            response = (
+                service.files()
+                .list(
+                    q=query,
+                    fields=f"nextPageToken, files({fields[0]})",
+                    pageToken=page_token,
+                    pageSize=1000,
+                )
+                .execute()
             )
-            .execute()
-        )
+        except Exception:
+            if fields[0] == BASIC_FILE_FIELDS:
+                raise
+            print("Drive rejected the extended field selection; retrying without sha256Checksum")
+            fields[0] = BASIC_FILE_FIELDS
+            continue
 
         for f in response.get("files", []):
             file_path = posixpath.join(parent_path, f["name"])
             if f["mimeType"] == "application/vnd.google-apps.folder":
                 # Recursively process subfolders
-                results.extend(list_files(service, f["id"], file_path))
+                results.extend(list_files(service, f["id"], file_path, fields))
             else:
                 if "size" in f:
                     f["relative_path"] = file_path
