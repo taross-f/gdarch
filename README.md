@@ -20,11 +20,20 @@ This way, you can keep your important data while significantly reducing storage 
 
 - Recursively downloads all files from a specified Google Drive folder
 - Creates a high-compression tar.xz archive (LZMA2, preset 9 + EXTREME)
-- Automatically sizes the LZMA dictionary to the archive so redundancy across
-  files can be exploited for the best possible compression ratio
-- Groups similar files together to further improve solid compression
+- Automatically sizes the LZMA dictionary to the archive — and to the memory
+  actually free on your machine — so redundancy across files can be exploited
+  for the best possible compression ratio
+- Collapses byte-identical files into tar hard links using the checksums Drive
+  already reports, so duplicates are neither downloaded nor stored
+- Groups similar files together and pushes already-compressed formats (JPEG,
+  MP4, ZIP, docx…) to the end of the stream, keeping compressible data inside
+  one match window
+- Tunes the LZMA context model to the payload (`pb=0` for text-dominated folders)
 - Uploads the archive to the parent folder
 - Optionally deletes the original folder
+
+The archive is a plain `tar.xz`: `tar -xJf archive.tar.xz` restores everything,
+hard links included, with no need for gdarch.
 
 ## Installation
 
@@ -68,8 +77,11 @@ gdarch --folder-id <TARGET_FOLDER_ID> --credentials credentials.json --delete-fo
 # Specify a custom archive name
 gdarch --folder-id <TARGET_FOLDER_ID> --archive-name my_archive.tar.xz --credentials credentials.json
 
-# Push the compression ratio even higher with a larger LZMA dictionary (more RAM)
+# Pin the LZMA dictionary instead of sizing it from free memory
 gdarch --folder-id <TARGET_FOLDER_ID> --credentials credentials.json --max-dict-size-mib 768
+
+# Keep every duplicate as its own copy (no tar hard links)
+gdarch --folder-id <TARGET_FOLDER_ID> --credentials credentials.json --no-dedup
 ```
 
 ### Options
@@ -78,11 +90,14 @@ gdarch --folder-id <TARGET_FOLDER_ID> --credentials credentials.json --max-dict-
 - `--credentials`: Path to OAuth2 credentials file (defaults to credentials.json)
 - `--archive-name`: Name for the uploaded archive file (optional)
 - `--delete-folder`: Delete the original folder after archiving (flag)
-- `--max-dict-size-mib`: Maximum LZMA dictionary size in MiB (default: 256). The
-  dictionary is automatically grown to cover the whole archive (up to this cap),
-  letting LZMA find matches *across* files in the solid stream for a better
-  compression ratio. Larger values can squeeze big folders further but use more
-  memory while compressing (~10.5x the dictionary size).
+- `--max-dict-size-mib`: Maximum LZMA dictionary size in MiB, or `auto`
+  (default). The dictionary is grown to cover the whole archive up to this cap,
+  letting LZMA find matches *across* files in the solid stream. `auto` derives
+  the cap from the memory that is free right now (64 MiB–1 GiB), since encoding
+  costs roughly 10.5x the dictionary size in RAM; pass a number to pin it.
+- `--no-dedup`: Store every duplicate file in full instead of emitting a tar
+  hard link to the first copy. Only needed if your extraction tool cannot handle
+  hard links.
 
 ### Finding Folder ID
 
@@ -105,16 +120,37 @@ poetry run pytest
 # Format code
 poetry run black .
 poetry run isort .
+
+# Measure the compression strategy (offline, no credentials needed)
+poetry run python -m bench.benchmark
 ```
+
+See [`bench/README.md`](bench/README.md) for what the benchmark measures and how
+to run it against your own folders.
 
 ## How It Works
 
 1. Authenticates with Google Drive using OAuth2
-2. Recursively lists all files in the specified folder
-3. Downloads files while streaming them directly into a tar.xz archive
-4. Uploads the compressed archive to the parent folder
-5. Optionally deletes the original folder
-6. Cleans up temporary files
+2. Recursively lists all files in the specified folder, picking up the size and
+   checksum Drive reports for each one
+3. Orders the files so related data sits together and already-compressed formats
+   go last, then picks LZMA2 parameters to match the payload
+4. Downloads files while streaming them directly into a tar.xz archive, skipping
+   the download entirely for content that is already in the archive and linking
+   to it instead
+5. Uploads the compressed archive to the parent folder
+6. Optionally deletes the original folder
+7. Cleans up temporary files
+
+### Why those choices
+
+`tar.xz` is a *solid* archive: every file is compressed against everything
+before it. Two things decide how much of that redundancy LZMA can actually
+reach — how far apart related bytes sit, and how wide the match window is.
+Grouping similar files and exiling incompressible blobs to the end shortens the
+distances; sizing the dictionary to free memory widens the window. What still
+falls outside the window is caught by checksum deduplication, which removes
+duplicate content outright rather than relying on the codec to match it.
 
 ## License
 

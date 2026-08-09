@@ -6,6 +6,7 @@ from io import BytesIO
 from unittest.mock import MagicMock, patch
 
 import pytest
+import requests
 from google.oauth2.credentials import Credentials
 from googleapiclient import discovery
 
@@ -627,3 +628,161 @@ def test_main_delete_folder(
         main()
 
     mock_delete.assert_called_once_with(mock_service, "test123")
+
+
+@patch("requests.Session.get", side_effect=requests.ConnectionError("boom"))
+@patch("gdarch.cli.list_files")
+def test_create_archive_survives_a_download_exception(
+    mock_list_files, mock_get, mock_service, mock_credentials, tmp_path
+):
+    # ダウンロード中の例外はそのファイルだけを諦め、アーカイブ自体は完成する
+    mock_list_files.return_value = [{"id": "a", "relative_path": "a.txt", "size": "3"}]
+
+    archive_path = tmp_path / "download_error.tar.xz"
+    result = create_archive(mock_service, mock_credentials, "test_folder", str(archive_path))
+
+    assert result is True
+    with tarfile.open(archive_path, "r:xz") as tar:
+        assert tar.getnames() == []
+
+
+@patch("requests.Session.get")
+@patch("gdarch.cli.list_files")
+def test_create_archive_deduplicates_identical_files(
+    mock_list_files, mock_get, mock_service, mock_credentials, tmp_path, capsys
+):
+    # 同一内容のファイルはハードリンクとして格納され、再ダウンロードもされない
+    mock_list_files.return_value = [
+        {"id": "a", "relative_path": "a.txt", "size": "4", "md5Checksum": "same"},
+        {"id": "b", "relative_path": "b.txt", "size": "4", "md5Checksum": "same"},
+    ]
+    mock_get.side_effect = _download_by_file_id({"a": b"dupe", "b": b"dupe"})
+
+    archive_path = tmp_path / "dedup.tar.xz"
+    result = create_archive(mock_service, mock_credentials, "test_folder", str(archive_path))
+
+    assert result is True
+    assert mock_get.call_count == 1
+    with tarfile.open(archive_path, "r:xz") as tar:
+        members = {m.name: m for m in tar.getmembers()}
+        assert members["b.txt"].islnk()
+        assert members["b.txt"].linkname == "a.txt"
+        assert tar.extractfile(members["a.txt"]).read() == b"dupe"
+    assert "Deduplicated" in capsys.readouterr().out
+
+
+@patch("requests.Session.get")
+@patch("gdarch.cli.list_files")
+def test_create_archive_can_disable_dedup(
+    mock_list_files, mock_get, mock_service, mock_credentials, tmp_path
+):
+    # deduplicate=False なら重複ファイルもそれぞれ実体として格納する
+    mock_list_files.return_value = [
+        {"id": "a", "relative_path": "a.txt", "size": "4", "md5Checksum": "same"},
+        {"id": "b", "relative_path": "b.txt", "size": "4", "md5Checksum": "same"},
+    ]
+    mock_get.side_effect = _download_by_file_id({"a": b"dupe", "b": b"dupe"})
+
+    archive_path = tmp_path / "no_dedup.tar.xz"
+    result = create_archive(
+        mock_service, mock_credentials, "test_folder", str(archive_path), deduplicate=False
+    )
+
+    assert result is True
+    assert mock_get.call_count == 2
+    with tarfile.open(archive_path, "r:xz") as tar:
+        assert all(m.isreg() for m in tar.getmembers())
+
+
+@patch("requests.Session.get")
+@patch("gdarch.cli.list_files")
+def test_create_archive_warns_about_failed_files(
+    mock_list_files, mock_get, mock_service, mock_credentials, tmp_path, capsys
+):
+    # ダウンロードに失敗したファイル数は最後に警告として報告される
+    mock_list_files.return_value = [{"id": "a", "relative_path": "a.txt", "size": "3"}]
+    failed = MagicMock()
+    failed.status_code = 404
+    mock_get.return_value = failed
+
+    archive_path = tmp_path / "failed.tar.xz"
+    assert create_archive(mock_service, mock_credentials, "test_folder", str(archive_path)) is True
+    assert "1 file(s) could not be archived" in capsys.readouterr().out
+
+
+@patch("requests.Session.get")
+@patch("gdarch.cli.list_files")
+def test_create_archive_uses_pb0_for_text_payloads(
+    mock_list_files, mock_get, mock_service, mock_credentials, tmp_path, capsys
+):
+    # テキスト中心のフォルダでは pb=0 が選ばれ、その旨が表示される
+    mock_list_files.return_value = [{"id": "a", "relative_path": "a.txt", "size": "3"}]
+    mock_get.side_effect = _download_by_file_id({"a": b"abc"})
+
+    archive_path = tmp_path / "text.tar.xz"
+    assert create_archive(mock_service, mock_credentials, "test_folder", str(archive_path)) is True
+    assert "pb=0" in capsys.readouterr().out
+
+
+@patch("gdarch.cli.get_credentials")
+@patch("gdarch.cli.get_drive_service")
+def test_main_rejects_a_non_numeric_max_dict_size(mock_drive_service, mock_creds, mock_service):
+    # 数値でも auto でもない値はエラーとして終了する
+    mock_creds.return_value = MagicMock()
+    mock_drive_service.return_value = mock_service
+
+    test_args = ["--folder-id", "x", "--credentials", "c.json", "--max-dict-size-mib", "huge"]
+    with patch("sys.argv", ["gdarch"] + test_args):
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 1
+
+
+@patch("gdarch.cli.get_credentials")
+@patch("gdarch.cli.get_drive_service")
+@patch("gdarch.cli.create_archive")
+@patch("gdarch.cli.upload_file")
+def test_main_auto_sizes_the_dictionary(
+    mock_upload, mock_create, mock_drive_service, mock_creds, mock_service, capsys
+):
+    # 既定の auto では空きメモリから辞書上限が決まり、create_archive へ渡される
+    mock_creds.return_value = MagicMock()
+    mock_drive_service.return_value = mock_service
+    mock_create.return_value = True
+    mock_upload.return_value = "archive123"
+
+    with patch("sys.argv", ["gdarch", "--folder-id", "x", "--credentials", "c.json"]):
+        main()
+
+    assert "Auto-selected maximum LZMA dictionary size" in capsys.readouterr().out
+    assert mock_create.call_args.kwargs["max_dict_size"] > 0
+    assert mock_create.call_args.kwargs["deduplicate"] is True
+
+
+@patch("gdarch.cli.get_credentials")
+@patch("gdarch.cli.get_drive_service")
+@patch("gdarch.cli.create_archive")
+@patch("gdarch.cli.upload_file")
+def test_main_honours_an_explicit_max_dict_size(
+    mock_upload, mock_create, mock_drive_service, mock_creds, mock_service
+):
+    # 明示された辞書サイズはそのまま MiB → バイトに変換して渡される
+    mock_creds.return_value = MagicMock()
+    mock_drive_service.return_value = mock_service
+    mock_create.return_value = True
+    mock_upload.return_value = "archive123"
+
+    test_args = [
+        "--folder-id",
+        "x",
+        "--credentials",
+        "c.json",
+        "--max-dict-size-mib",
+        "64",
+        "--no-dedup",
+    ]
+    with patch("sys.argv", ["gdarch"] + test_args):
+        main()
+
+    assert mock_create.call_args.kwargs["max_dict_size"] == 64 << 20
+    assert mock_create.call_args.kwargs["deduplicate"] is False
